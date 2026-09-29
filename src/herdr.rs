@@ -214,6 +214,40 @@ impl<R: Runner> Cli<'_, R> {
         }
         Ok(PathBuf::from(path))
     }
+
+    /// The running server's version, as `(0, 9, 2)`. Not the `herdr` on
+    /// disk: after `herdr update` the old server runs on until a restart.
+    /// The reply is a bare object, not `{"result": …}`
+    /// (`tests/fixtures/cli/status-server.json`).
+    pub fn server_version(&self) -> Result<(u32, u32, u32), Error> {
+        #[derive(Deserialize)]
+        struct Status {
+            version: String,
+        }
+        let out = self.runner.run(self.bin, &["status", "server", "--json"])?;
+        let text = out.stdout.trim();
+        if !out.success() {
+            return Err(Error::Unexpected(format!(
+                "exit {:?}: {}",
+                out.code,
+                out.stderr.trim()
+            )));
+        }
+        let status: Status =
+            serde_json::from_str(text).map_err(|e| Error::Unexpected(format!("{e}: {text}")))?;
+        parse_version(&status.version)
+            .ok_or_else(|| Error::Unexpected(format!("version {:?}", status.version)))
+    }
+}
+
+/// The first three numbers of `0.9.2`, `0.9.3-rc.1` or `1.0.0+build`.
+pub fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = text.split(['.', '-', '+']).map(str::parse::<u32>);
+    Some((
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+    ))
 }
 
 /// Asks Herdr to focus a pane, over the socket.
@@ -226,10 +260,58 @@ impl<R: Runner> Cli<'_, R> {
 /// a click waiting. Nothing is on screen by then, so the cost is a click
 /// that appears to do nothing.
 pub fn focus_pane(socket_path: &Path, pane_id: &str, timeout: Duration) -> Result<(), Error> {
+    socket_request::<serde_json::Value>(
+        socket_path,
+        "pane.focus",
+        serde_json::json!({ "pane_id": pane_id }),
+        timeout,
+    )
+    .map(|_| ())
+}
+
+/// Whether Herdr passed a `notification.show` on to its clients, and why
+/// not if it didn't: `rate_limited`, or with no client attached
+/// `disabled` if toasts are off and `no_foreground_client` if they're on.
+/// The binary also has `busy`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Shown {
+    pub shown: bool,
+    pub reason: String,
+}
+
+/// Asks Herdr to show a notification with its own `done` sound, over the
+/// socket, so a title can't be taken for a CLI flag. Herdr plays the sound
+/// and shows a toast by its own `[ui.sound]` and `[ui.toast]` settings, and
+/// doesn't first check that a pane is still `done`, the check a finished
+/// shell command fails from 0.9.2. It takes one of these a second across
+/// the server, and does nothing with no client attached
+/// (`tests/fixtures/socket/notification-show-0.9.2.json`, a server with no
+/// client and toasts off, answers `disabled`).
+pub fn show_notification(
+    socket_path: &Path,
+    title: &str,
+    body: &str,
+    timeout: Duration,
+) -> Result<Shown, Error> {
+    socket_request(
+        socket_path,
+        "notification.show",
+        serde_json::json!({ "title": title, "body": body, "sound": "done" }),
+        timeout,
+    )
+}
+
+/// One request, one reply line.
+fn socket_request<T: DeserializeOwned>(
+    socket_path: &Path,
+    method: &str,
+    params: serde_json::Value,
+    timeout: Duration,
+) -> Result<T, Error> {
     let request = serde_json::json!({
         "id": "herdr-nudge",
-        "method": "pane.focus",
-        "params": { "pane_id": pane_id },
+        "method": method,
+        "params": params,
     });
 
     let mut stream = UnixStream::connect(socket_path)?;
@@ -239,8 +321,7 @@ pub fn focus_pane(socket_path: &Path, pane_id: &str, timeout: Duration) -> Resul
     line.push('\n');
     stream.write_all(line.as_bytes())?;
 
-    // One request, one reply line.
     let mut reply = String::new();
     BufReader::new(stream).read_line(&mut reply)?;
-    parse_reply::<serde_json::Value>(&reply).map(|_| ())
+    parse_reply(&reply)
 }

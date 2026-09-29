@@ -11,11 +11,11 @@ use std::path::{Path, PathBuf};
 use herdr_nudge::classify::{ClassifySignal, PaneKind};
 use herdr_nudge::cli::JobId;
 use herdr_nudge::config::Config;
-use herdr_nudge::event::{AgentStatus, Envelope};
+use herdr_nudge::event::{AgentStatus, Envelope, EventData};
 use herdr_nudge::handler::{self, Deps, Outcome};
 use herdr_nudge::process::Spawner;
 use herdr_nudge::state::{AgentsCache, Loaded, StateDir, now_ms};
-use support::{Fixture, Recorded, Replay, Spy, scratch_dir};
+use support::{Fixture, Recorded, Replay, SocketExchange, Spy, fake_herdr, scratch_dir};
 
 /// A state directory, a fake plugin with a fake notifier in it, and a `herdr`
 /// that only answers what it was given.
@@ -98,6 +98,14 @@ impl Harness {
 
     fn handle_envelope(&self, envelope: &Envelope) -> Outcome {
         handler::handle(&self.deps(), envelope, None).outcome
+    }
+
+    fn report(&self, fixture: &str) -> handler::Report {
+        self.report_envelope(&Fixture::load(fixture).envelope())
+    }
+
+    fn report_envelope(&self, envelope: &Envelope) -> handler::Report {
+        handler::handle(&self.deps(), envelope, None)
     }
 
     fn remember_agents(&self, labels: &[&str]) {
@@ -207,6 +215,175 @@ fn the_banner_is_silent_unless_sound_is_on() {
         Some("default"),
         "agent/blocked with sound = true"
     );
+}
+
+/// A harness for the zsh `done` from the 0.9.2 capture, on a server whose
+/// `status server` answers from `capture`.
+fn shell_done_on(test_name: &str, capture: &str) -> Harness {
+    let mut harness = Harness::new(test_name, Vec::new());
+    harness.runner = Replay::answering(
+        "herdr",
+        &["pane", "get", "wQ:p2"],
+        &Recorded::cli("pane-get-unfocused"),
+    )
+    .with(Recorded::cli(capture));
+    harness.remember_agents(&["claude"]);
+    harness
+}
+
+fn asked_version(harness: &Harness) -> bool {
+    harness
+        .runner
+        .calls
+        .borrow()
+        .iter()
+        .any(|call| call[1..].starts_with(&["status".to_owned(), "server".to_owned()]))
+}
+
+/// Herdr 0.9.2 releases a finished shell command within a second, and then
+/// shows no toast and plays no sound for it, so we ask it to.
+#[test]
+fn a_shell_done_on_herdr_0_9_2_asks_herdr_for_its_sound() {
+    let mut harness = shell_done_on("shell_sound_0_9_2", "status-server-0.9.2");
+    let exchange = SocketExchange::load("notification-show-0.9.2");
+    let (socket, server) = fake_herdr("sound_sock", &exchange);
+    harness.socket = socket;
+
+    let Outcome::Posted(posted) = harness.handle("shell/done-unwatched-failed-0.9.2") else {
+        panic!("shell/done-unwatched-failed-0.9.2 did not post");
+    };
+    let sent: serde_json::Value = serde_json::from_str(&server.join().unwrap().request).unwrap();
+    assert_eq!(sent["method"], "notification.show");
+    assert_eq!(sent["params"]["title"], posted.title.as_str());
+    assert_eq!(sent["params"]["sound"], "done");
+    let event = Fixture::load("shell/done-unwatched-failed-0.9.2").envelope();
+    let EventData::PaneAgentStatusChanged(event) = event.data else {
+        panic!("expected a status event");
+    };
+    assert_eq!(sent["params"]["body"], event.title.unwrap().as_str());
+
+    let argv = harness.spy.only();
+    assert!(
+        !argv.iter().any(|a| a == "-sound"),
+        "the banner's own sound would be a second one: {argv:?}"
+    );
+}
+
+/// Up to 0.9.1 the pane stays `done` until the next command, so Herdr does
+/// it all itself.
+#[test]
+fn a_shell_done_on_herdr_0_9_0_leaves_it_to_herdr() {
+    let harness = shell_done_on("shell_sound_0_9_0", "status-server");
+    let report = harness.report("shell/done-unwatched-failed-0.9.2");
+    assert!(matches!(report.outcome, Outcome::Posted(_)), "{report:?}");
+    // Nothing listens on this harness's socket, so asking would leave one
+    // of these notes.
+    assert!(
+        !report
+            .notes
+            .iter()
+            .any(|n| n.contains("for its sound") || n.starts_with("herdr showed nothing")),
+        "asked for Herdr's sound on the 0.9.0 server in status-server: {:?}",
+        report.notes
+    );
+    assert!(
+        !only_job(&harness).released_by_herdr,
+        "status-server is 0.9.0, which keeps the pane until the next command"
+    );
+}
+
+/// The one job on disk.
+fn only_job(harness: &Harness) -> herdr_nudge::state::Job {
+    let ids = harness.state.job_ids().unwrap();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    match harness.state.job(&ids[0]).unwrap() {
+        Loaded::Found(job) => job,
+        other => panic!("job {}: {other:?}", ids[0]),
+    }
+}
+
+/// An unknown version is treated as 0.9.2 or later. On an older server
+/// that costs a second sound. The other way, a newer server's banner would
+/// vanish as soon as it went up.
+#[test]
+fn a_server_version_that_cant_be_read_counts_as_0_9_2() {
+    let harness = Harness::answering("version_unknown", "wQ:p2", "pane-get-unfocused");
+    harness.remember_agents(&["claude"]);
+    let report = harness.report("shell/done-unwatched-failed-0.9.2");
+    assert!(matches!(report.outcome, Outcome::Posted(_)), "{report:?}");
+    assert!(
+        only_job(&harness).released_by_herdr,
+        "released_by_herdr for shell/done-unwatched-failed-0.9.2 with no version"
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.starts_with("could not ask the server's version")),
+        "{:?}",
+        report.notes
+    );
+}
+
+/// A reporter that sends `idle` with no `working` first, as herdr-ohmyzsh
+/// does below its threshold, gets an `idle` banner
+/// (`shell/idle-without-working`). 0.9.2 releases that one too, and Herdr
+/// plays nothing for an `idle`, so neither do we.
+#[test]
+fn herdrs_own_release_after_a_shell_idle_leaves_the_banner_up() {
+    let harness = shell_done_on("released_after_idle", "status-server-0.9.2");
+    let report = handler::handle(
+        &harness.deps(),
+        &on_pane("shell/idle-with-title-labels", "wQ:p2"),
+        None,
+    );
+    assert!(matches!(report.outcome, Outcome::Posted(_)), "{report:?}");
+    assert!(
+        !report.notes.iter().any(|n| n.contains("for its sound")),
+        "asked for Herdr's sound for an idle: {:?}",
+        report.notes
+    );
+
+    let release = Fixture::load("shell/released-by-herdr-after-done-0.9.2")
+        .event_json_with("agent", "make".into());
+    harness.handle_envelope(&Envelope::parse(&release).unwrap());
+    assert_eq!(
+        removes(&harness.spy),
+        Vec::<String>::new(),
+        "Herdr's release of make after shell/idle-with-title-labels"
+    );
+}
+
+/// Herdr takes one of these a second and does nothing without a client.
+/// Either way the banner is up and the reason goes to the log.
+#[test]
+fn herdr_showing_nothing_is_only_a_note() {
+    let mut harness = shell_done_on("shell_sound_nothing", "status-server-0.9.2");
+    let exchange = SocketExchange::load("notification-show-0.9.2");
+    let (socket, server) = fake_herdr("nothing_sock", &exchange);
+    harness.socket = socket;
+    let report = harness.report("shell/done-unwatched-failed-0.9.2");
+    server.join().unwrap();
+    assert!(matches!(report.outcome, Outcome::Posted(_)), "{report:?}");
+    assert!(
+        report
+            .notes
+            .contains(&"herdr showed nothing: disabled".to_owned()),
+        "notification-show-0.9.2 answers disabled: {:?}",
+        report.notes
+    );
+}
+
+/// Agents keep Herdr's own sound, so posting one costs no version query.
+#[test]
+fn an_agent_done_does_not_ask_the_servers_version() {
+    let harness = Harness::answering("agent_no_version", "w1:p1", "pane-get-unfocused");
+    harness.remember_agents(&["claude"]);
+    let outcome = harness.handle_envelope(&on_pane("agent/done", "w1:p1"));
+    assert!(matches!(outcome, Outcome::Posted(_)), "{outcome:?}");
+    let argv = harness.spy.only();
+    assert!(!argv.iter().any(|a| a == "-sound"), "{argv:?}");
+    assert!(!asked_version(&harness), "asked the version for an agent");
 }
 
 /// Everything the click needs has to be on disk before the banner is up,
@@ -1089,6 +1266,178 @@ fn a_release_withdraws_the_agents_banner() {
     assert_eq!(outcome, Outcome::StatusNotWatched(AgentStatus::Unknown));
     assert_eq!(removes(&harness.spy), vec!["herdr-nudge-w1:p1"]);
     assert_eq!(harness.state.job_ids().unwrap(), Vec::new());
+}
+
+/// A zsh `done` banner up for `wQ:p2`, from the 0.9.2 capture.
+fn shell_done_on_0_9_2(test_name: &str) -> (Harness, JobId) {
+    shell_done_posted(test_name, "status-server-0.9.2")
+}
+
+/// The zsh `done` from the 0.9.2 capture, posted on a server whose
+/// `status server` answers from `capture`. Nothing listens on the
+/// harness's socket, so asking Herdr for its sound only leaves a note.
+fn shell_done_posted(test_name: &str, capture: &str) -> (Harness, JobId) {
+    let mut harness = shell_done_on(test_name, capture);
+    let Outcome::Posted(posted) = harness.handle("shell/done-unwatched-failed-0.9.2") else {
+        panic!("shell/done-unwatched-failed-0.9.2 did not post");
+    };
+    harness.now_ms += 1_000;
+    (harness, posted.job_id)
+}
+
+/// On 0.9.0 and 0.9.1 a release comes from the reporter when the next
+/// command starts. herdr-ohmyzsh and the like send nothing after it, so it
+/// has to take the banner down itself.
+#[test]
+fn a_release_on_herdr_0_9_0_withdraws_the_banner() {
+    let (harness, _) = shell_done_posted("released_0_9_0", "status-server");
+    harness.handle("shell/released-by-herdr-after-done-0.9.2");
+    assert_eq!(
+        removes(&harness.spy),
+        vec!["herdr-nudge-wQ:p2"],
+        "a release on the 0.9.0 server in status-server"
+    );
+    assert_eq!(harness.state.job_ids().unwrap(), Vec::new());
+}
+
+/// Herdr 0.9.2 releases the command itself once the prompt is back, in the
+/// same second as the `done`. That isn't the user coming back.
+#[test]
+fn herdrs_own_release_after_a_shell_done_leaves_the_banner_up() {
+    let (harness, job_id) = shell_done_on_0_9_2("released_after_done");
+    assert_eq!(
+        harness.handle("shell/released-by-herdr-after-done-0.9.2"),
+        Outcome::StatusNotWatched(AgentStatus::Unknown)
+    );
+    assert_eq!(
+        removes(&harness.spy),
+        Vec::<String>::new(),
+        "shell/released-by-herdr-after-done-0.9.2 took the banner down"
+    );
+    assert_eq!(harness.state.job_ids().unwrap(), vec![job_id]);
+}
+
+/// The zsh hook clears the title when the next command starts, which is
+/// what takes the banner down now that the release doesn't.
+#[test]
+fn the_next_command_after_a_shell_done_withdraws_the_banner() {
+    let (harness, _) = shell_done_on_0_9_2("cleared_after_done");
+    harness.handle("shell/released-by-herdr-after-done-0.9.2");
+    let outcome = harness.handle_envelope(&on_pane("shell/cleared-on-next-command-0.9.2", "wQ:p2"));
+    assert_eq!(outcome, Outcome::StatusNotWatched(AgentStatus::Unknown));
+    assert_eq!(
+        removes(&harness.spy),
+        vec!["herdr-nudge-wQ:p2"],
+        "shell/cleared-on-next-command-0.9.2 should withdraw"
+    );
+    assert_eq!(
+        harness.state.job_ids().unwrap(),
+        Vec::new(),
+        "job left after shell/cleared-on-next-command-0.9.2"
+    );
+}
+
+/// Another label being released means something else had the pane since
+/// the banner went up.
+#[test]
+fn a_release_of_another_label_withdraws_the_banner() {
+    let (harness, _) = shell_done_on_0_9_2("released_other_label");
+    let json = Fixture::load("shell/released-by-herdr-after-done-0.9.2")
+        .event_json_with("agent", "make".into());
+    harness.handle_envelope(&Envelope::parse(&json).unwrap());
+    assert_eq!(
+        removes(&harness.spy),
+        vec!["herdr-nudge-wQ:p2"],
+        "a release of make after the mark.sh banner"
+    );
+}
+
+/// `known_agents_remove` puts an agent down as a shell command, but Herdr
+/// still knows it as an agent, doesn't release it, and plays its own sound.
+#[test]
+fn an_agent_put_down_as_a_shell_command_keeps_herdrs_own_sound() {
+    let mut harness = shell_done_on("agent_as_shell", "status-server-0.9.2");
+    harness.config.shell.known_agents_remove = vec!["claude".to_owned()];
+    let report = harness.report_envelope(&on_pane("agent/done", "wQ:p2"));
+    let Outcome::Posted(posted) = &report.outcome else {
+        panic!("agent/done with claude in known_agents_remove: {report:?}");
+    };
+    assert_eq!(posted.kind, PaneKind::Shell, "known_agents_remove");
+    assert!(
+        !only_job(&harness).released_by_herdr,
+        "released_by_herdr for claude, which Herdr knows"
+    );
+    assert!(
+        !asked_version(&harness),
+        "asked the version for a label Herdr knows"
+    );
+}
+
+/// Herdr lists `omp` as an integration but ships no manifest for it, so
+/// it isn't in the manifests. Herdr still knows it and doesn't release it.
+#[test]
+fn an_agent_without_a_manifest_is_not_released_by_herdr() {
+    let mut harness = shell_done_on("omp_as_shell", "status-server-0.9.2");
+    harness.config.shell.known_agents_remove = vec!["omp".to_owned()];
+    let json =
+        Fixture::load("shell/done-unwatched-failed-0.9.2").event_json_with("agent", "omp".into());
+    let report = harness.report_envelope(&Envelope::parse(&json).unwrap());
+    assert!(matches!(report.outcome, Outcome::Posted(_)), "{report:?}");
+    assert!(
+        !only_job(&harness).released_by_herdr,
+        "released_by_herdr for omp, which Herdr knows"
+    );
+}
+
+/// A custom agent Herdr doesn't know is released too, once its pane is back
+/// at a prompt, as a one-shot run is right after its `done`. Its banner has
+/// to stay. It gets no sound from us: an agent that keeps running isn't
+/// released, and then Herdr plays its own.
+#[test]
+fn a_custom_agent_herdr_releases_keeps_its_banner_without_our_sound() {
+    let mut harness = shell_done_on("custom_agent", "status-server-0.9.2");
+    harness.config.shell.known_agents_extra = vec!["mark.sh".to_owned()];
+    let report = harness.report("shell/done-unwatched-failed-0.9.2");
+    let Outcome::Posted(posted) = &report.outcome else {
+        panic!("mark.sh in known_agents_extra: {report:?}");
+    };
+    assert_eq!(posted.kind, PaneKind::Agent, "known_agents_extra");
+    assert!(
+        only_job(&harness).released_by_herdr,
+        "released_by_herdr for mark.sh, which Herdr doesn't know"
+    );
+    assert!(
+        !report.notes.iter().any(|n| n.contains("for its sound")),
+        "asked for Herdr's sound for an agent: {:?}",
+        report.notes
+    );
+
+    harness.handle("shell/released-by-herdr-after-done-0.9.2");
+    assert_eq!(
+        removes(&harness.spy),
+        Vec::<String>::new(),
+        "Herdr's release of the mark.sh agent"
+    );
+}
+
+/// `sound = true` adds the macOS sound to every banner, a shell `done` on
+/// 0.9.2 included, and Herdr is still asked for its own.
+#[test]
+fn sound_on_with_herdr_0_9_2_plays_both() {
+    let mut harness = shell_done_on("sound_on_0_9_2", "status-server-0.9.2");
+    harness.config.notifications.sound = true;
+    let exchange = SocketExchange::load("notification-show-0.9.2");
+    let (socket, server) = fake_herdr("both_sock", &exchange);
+    harness.socket = socket;
+    let outcome = harness.handle("shell/done-unwatched-failed-0.9.2");
+    assert!(matches!(outcome, Outcome::Posted(_)), "{outcome:?}");
+    assert_eq!(
+        Spy::arg_after(&harness.spy.only(), "-sound").as_deref(),
+        Some("default"),
+        "banner sound with sound = true"
+    );
+    let sent: serde_json::Value = serde_json::from_str(&server.join().unwrap().request).unwrap();
+    assert_eq!(sent["method"], "notification.show");
 }
 
 /// A new status that doesn't post still means the old banner is out of date.

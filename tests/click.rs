@@ -60,6 +60,7 @@ fn a_job(id: &JobId, expires_at_ms: u64, socket_path: &Path) -> Job {
         group: "herdr-nudge-w3:p1".to_owned(),
         bundle_id: Some("com.mitchellh.ghostty".to_owned()),
         detect_at_click: false,
+        released_by_herdr: false,
         socket_path: socket_path.to_owned(),
         notifier_path: PathBuf::from(
             "/plugin/vendor/HerdrNudge.app/Contents/MacOS/terminal-notifier",

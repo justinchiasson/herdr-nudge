@@ -242,6 +242,14 @@ pub struct Job {
     /// then raises `bundle_id`.
     #[serde(default)]
     pub detect_at_click: bool,
+    /// Posted for a label Herdr doesn't know as an agent, usually a shell
+    /// command, on a Herdr server of 0.9.2 or later. A server whose version
+    /// couldn't be read is assumed to be one. Such a server releases the
+    /// label itself once the pane is back at a prompt, so a release doesn't
+    /// mean the user moved on. False for a job written before this field
+    /// existed.
+    #[serde(default)]
+    pub released_by_herdr: bool,
     pub socket_path: PathBuf,
     /// So the click can withdraw the notification.
     pub notifier_path: PathBuf,

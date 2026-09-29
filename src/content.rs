@@ -65,10 +65,10 @@ fn status_word(event: &StatusEvent) -> &str {
     if let Some(word) = event.state_labels.get(event.agent_status.as_str()) {
         return word;
     }
-    if event.agent_status == AgentStatus::Done {
-        if let Some(word) = event.state_labels.get(AgentStatus::Idle.as_str()) {
-            return word;
-        }
+    if event.agent_status == AgentStatus::Done
+        && let Some(word) = event.state_labels.get(AgentStatus::Idle.as_str())
+    {
+        return word;
     }
     event.agent_status.as_str()
 }

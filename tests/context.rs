@@ -81,12 +81,14 @@ fn every_fixture_environment_resolves_to_paths() {
                 "{}",
                 fixture.name
             );
-            assert_eq!(
-                env.socket_path,
-                PathBuf::from("/Users/dev/.config/herdr/herdr.sock"),
-                "{}",
-                fixture.name
-            );
+            // The 0.9.2 clear capture comes from a throwaway server too,
+            // with its own home and a named session.
+            let socket = if fixture.source.contains("herdr-0.9.2-clear") {
+                "/tmp/hxclear/.config/herdr/sessions/hnx/herdr.sock"
+            } else {
+                "/Users/dev/.config/herdr/herdr.sock"
+            };
+            assert_eq!(env.socket_path, PathBuf::from(socket), "{}", fixture.name);
         }
         assert!(
             env.state_dir.is_absolute() && env.config_dir.is_absolute(),

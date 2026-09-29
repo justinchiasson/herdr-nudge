@@ -27,8 +27,8 @@ later. Nothing else to install.
   looking at: focused in Herdr, with your terminal in front.
 - **Cleans up after itself.** A notification goes away when its pane moves
   on (the agent starts working again, you run another command), or when the
-  pane, its tab or its workspace closes. On Herdr 0.9.1 it also goes when
-  you switch to the pane yourself.
+  pane, its tab or its workspace closes. On Herdr 0.9.1 and later it also
+  goes when you switch to the pane yourself.
 
 | A test run fails while you're in your editor | Click the notification, and you're at the pane |
 |---|---|
@@ -153,7 +153,7 @@ setting at its default and a note on each. These are all of them:
 |---|---|---|
 | `default_terminal` | unset | Bundle id of the app a click brings forward. Unset, it's the terminal your Herdr client runs in. It's a top-level key, so it goes above the first `[section]`. |
 | `[notifications] clickable_secs` | `3600` | How long a notification can still be clicked in Notification Center, in seconds. |
-| `[notifications] sound` | `false` | Herdr plays its own sound for these events. `true` adds ours. |
+| `[notifications] sound` | `false` | Herdr plays its own sound for these events, so Herdr Nudge adds none. `true` also plays the macOS notification sound with each notification. Since Herdr 0.9.2, Herdr usually skips its sound and pop-up when a long command finishes, so Herdr Nudge asks Herdr to play them, whatever this is set to. Your Herdr settings still decide. |
 | `[notifications] agent_logos` | `true` | The agent's logo on the right of the notification. |
 | `[notifications] show_workspace` | `true` | The workspace's name under the title. |
 | `[agents] enabled` | `true` | Notifications for AI agents. |
@@ -288,13 +288,18 @@ If you're still stuck, open an issue with the output of [`doctor`](#commands) an
 
 - A `done` notification stays up if you come back to its pane by switching
   apps, with the pane already selected in Herdr. Herdr sends plugins no event
-  for that. It goes when you click it, when the pane changes state again, or
-  after an hour.
+  for that. It goes when you click it, when the agent starts working again or
+  you run another command there, or after an hour.
 - A click brings your terminal app to the front, but not the window or tab
   running Herdr. With several windows open, macOS brings forward the one you
   used last. With several tabs, the one that was showing stays showing.
 - If you move a pane to another workspace, a notification it already had
   doesn't clear by itself.
+- If another plugin, such as herdr-ohmyzsh, tells Herdr about your shell
+  commands instead of Herdr Nudge's zsh hook, then on Herdr 0.9.2 and
+  later a command's notification doesn't go away when you run the next
+  command. It still goes when you click it, switch to its pane, or after
+  an hour.
 
 ## Development
 

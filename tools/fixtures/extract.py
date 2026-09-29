@@ -113,6 +113,8 @@ HERDR_VERSIONS = {
     "events-2026-09-23-herdr-0.9.1.log": "0.9.1",
     "events-2026-09-26-herdr-0.9.1-closes.log": "0.9.1",
     "events-2026-09-26-herdr-0.9.0-closes.log": "0.9.0",
+    "events-2026-09-29-herdr-0.9.2.log": "0.9.2",
+    "events-2026-09-29-herdr-0.9.2-clear.log": "0.9.2",
 }
 
 # {raw log: [(category, name, header line, provenance, why)]}
@@ -176,6 +178,13 @@ SELECTIONS = {
         ("lifecycle", "tab-closed-by-cli-0.9.0", 119, "programmatic", "herdr tab close on a background tab with two panes"),
         ("lifecycle", "workspace-closed-by-cli-0.9.0", 211, "programmatic", "herdr workspace close on a background workspace with two tabs and three panes"),
         ("lifecycle", "tab-closed-by-pane-move-0.9.0", 381, "programmatic", "herdr pane move took the tab's last pane to another workspace: tab.closed, and the pane's id changed"),
+    ],
+    "events-2026-09-29-herdr-0.9.2.log": [
+        ("shell", "done-unwatched-failed-0.9.2", 419, "manual", "zsh hook, a failing command while the user was in another pane: done with idle=failed"),
+        ("shell", "released-by-herdr-after-done-0.9.2", 432, "manual", "Herdr 0.9.2 releases a reported shell command itself once the prompt is back, in the same second as the done: unknown, still naming the agent"),
+    ],
+    "events-2026-09-29-herdr-0.9.2-clear.log": [
+        ("shell", "cleared-on-next-command-0.9.2", 185, "programmatic", "The zsh hook clears the title and labels when the next command starts; on a pane nobody claims, Herdr sends unknown with no agent"),
     ],
 }
 

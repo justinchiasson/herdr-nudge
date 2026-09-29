@@ -61,7 +61,12 @@ pub struct StatusEvent {
     pub pane_id: String,
     pub workspace_id: String,
     pub agent_status: AgentStatus,
-    /// Missing on the status event that follows an agent release.
+    /// Missing when Herdr releases an agent it detected
+    /// (`agent/status-unknown-no-agent-field.json`), and on a metadata
+    /// report to a pane nobody claims. The release of a reported one still
+    /// names it, whether the reporter sends it
+    /// (`shell/status-unknown-on-release.json`) or Herdr 0.9.2 does
+    /// (`shell/released-by-herdr-after-done-0.9.2.json`).
     #[serde(default)]
     pub agent: Option<String>,
     #[serde(default)]

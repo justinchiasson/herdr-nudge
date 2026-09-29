@@ -190,18 +190,18 @@ class Verify:
 
     # Running
 
-    def herdr(self, *argv, check=True):
-        proc = subprocess.run([HERDR, *argv], capture_output=True, text=True, env=SERVER_ENV)
+    def herdr(self, *argv, check=True, env=None):
+        proc = subprocess.run([HERDR, *argv], capture_output=True, text=True, env=env or SERVER_ENV)
         if check and proc.returncode != 0:
             raise SystemExit(f"herdr {' '.join(argv)}: exit {proc.returncode}: {proc.stderr.strip()}")
         return proc
 
-    def cli(self, base, *argv, settle=0):
+    def cli(self, base, *argv, settle=0, env=None):
         """With `settle`, keep asking for up to that many seconds while the
         reply doesn't match yet, for output that fills in after startup."""
         deadline = time.monotonic() + settle
         while True:
-            proc = self.herdr(*argv, check=False)
+            proc = self.herdr(*argv, check=False, env=env)
             if time.monotonic() >= deadline or self.matches("cli", base, proc.stdout):
                 break
             time.sleep(0.2)
@@ -286,8 +286,17 @@ class Verify:
         self.cli("workspace-get", "workspace", "get", ws)
         self.cli("workspace-get-not-found", "workspace", "get", "w99")
         self.cli("plugin-config-dir", "plugin", "config-dir", "herdr-nudge")
+        # Asked the way a hook asks it: by socket, with no session name, so
+        # `session` comes back null as in the capture.
+        by_socket = {k: v for k, v in SERVER_ENV.items() if k != "HERDR_SESSION"}
+        self.cli("status-server", "status", "server", "--json",
+                 env={**by_socket, "HERDR_SOCKET_PATH": self.socket_path})
         self.socket_call("pane-focus-ok", "pane.focus", {"pane_id": claude})  # already focused
         self.socket_call("pane-focus-not-found", "pane.focus", {"pane_id": "w999:p1"})
+        # No client is attached yet, so Herdr shows and plays nothing, and
+        # with toasts off by default it answers `disabled`.
+        self.socket_call("notification-show", "notification.show",
+                         {"title": "sleep 8 · done", "body": "herdr-nudge", "sound": "done"})
 
         # A shell command claimed the way our zsh hook does, then released.
         self.herdr("pane", "report-agent", shell, "--source", "verify", "--agent", "make",

@@ -325,6 +325,7 @@ fn job(id: &JobId) -> Job {
         group: "herdr-nudge-w1:p1".to_owned(),
         bundle_id: None,
         detect_at_click: false,
+        released_by_herdr: false,
         socket_path: std::path::PathBuf::from("/tmp/herdr.sock"),
         notifier_path: std::path::PathBuf::from("/plugin/notifier"),
         created_at_ms: 1_000,

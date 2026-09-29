@@ -171,3 +171,54 @@ fn focus_pane_gives_up_on_a_silent_socket() {
     assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
     server.join().unwrap();
 }
+
+/// The server's own version, not the binary's: after `herdr update` the old
+/// server runs on until a restart.
+#[test]
+fn server_version_reads_the_running_servers_version() {
+    for (capture, want) in [
+        ("status-server", (0, 9, 0)),
+        ("status-server-0.9.2", (0, 9, 2)),
+    ] {
+        let replay = Replay::new([Recorded::cli(capture)]);
+        assert_eq!(cli(&replay).server_version().unwrap(), want, "{capture}");
+    }
+}
+
+#[test]
+fn versions_parse_up_to_their_third_number() {
+    assert_eq!(herdr::parse_version("0.9.2"), Some((0, 9, 2)));
+    assert_eq!(herdr::parse_version("0.9.3-rc.1"), Some((0, 9, 3)));
+    assert_eq!(herdr::parse_version("1.0.0+build"), Some((1, 0, 0)));
+    assert_eq!(herdr::parse_version("0.9"), None);
+    assert_eq!(herdr::parse_version("v0.9.2"), None);
+}
+
+/// The title goes through the JSON encoder, so one starting with `-` can't
+/// pass for a flag, and the reply says why nothing was shown.
+#[test]
+fn show_notification_sends_the_title_body_and_done_sound() {
+    let exchange = SocketExchange::load("notification-show-0.9.2");
+    let (path, server) = fake_herdr("show_note", &exchange);
+
+    let reply = herdr::show_notification(
+        &path,
+        "sleep 8 · done",
+        "herdr-nudge",
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    assert_eq!(
+        reply,
+        herdr::Shown {
+            shown: false,
+            reason: "disabled".to_owned()
+        },
+        "notification-show-0.9.2: no client attached and toasts off"
+    );
+
+    let sent: serde_json::Value = serde_json::from_str(&server.join().unwrap().request).unwrap();
+    let captured: serde_json::Value = serde_json::from_str(&exchange.request).unwrap();
+    assert_eq!(sent["method"], captured["method"]);
+    assert_eq!(sent["params"], captured["params"]);
+}

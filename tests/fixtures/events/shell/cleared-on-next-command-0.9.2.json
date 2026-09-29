@@ -1,0 +1,25 @@
+{
+  "source": "tests/fixtures/raw/events-2026-09-29-herdr-0.9.2-clear.log:185",
+  "herdr_version": "0.9.2",
+  "captured_at": "12:26:02",
+  "provenance": "programmatic",
+  "mark": "B: next command, short (true)",
+  "why": "The zsh hook clears the title and labels when the next command starts; on a pane nobody claims, Herdr sends unknown with no agent",
+  "event": "pane.agent_status_changed",
+  "event_json": "{\"event\":\"pane_agent_status_changed\",\"data\":{\"type\":\"pane_agent_status_changed\",\"pane_id\":\"w1:p1\",\"workspace_id\":\"w1\",\"agent_status\":\"unknown\"}}",
+  "env": {
+    "HERDR_BIN_PATH": "/Users/dev/.local/bin/herdr",
+    "HERDR_ENV": "1",
+    "HERDR_PANE_ID": "w1:p1",
+    "HERDR_PLUGIN_CONFIG_DIR": "/tmp/hxclear/.config/herdr/plugins/config/probe",
+    "HERDR_PLUGIN_CONTEXT_JSON": "{\"workspace_id\":\"w1\",\"workspace_label\":\"hxclear\",\"workspace_cwd\":\"/private/tmp/hxclear\",\"tab_id\":\"w1:t1\",\"tab_label\":\"1\",\"focused_pane_id\":\"w1:p1\",\"focused_pane_cwd\":\"/private/tmp/hxclear\",\"focused_pane_status\":\"unknown\",\"invocation_source\":\"api\",\"correlation_id\":\"pane.agent_status_changed\"}",
+    "HERDR_PLUGIN_EVENT": "pane.agent_status_changed",
+    "HERDR_PLUGIN_ID": "probe",
+    "HERDR_PLUGIN_ROOT": "/private/tmp/hxclear/probe",
+    "HERDR_PLUGIN_STATE_DIR": "/tmp/hxclear/.local/state/herdr/plugins/probe",
+    "HERDR_SESSION": "hnx",
+    "HERDR_SOCKET_PATH": "/tmp/hxclear/.config/herdr/sessions/hnx/herdr.sock",
+    "HERDR_TAB_ID": "w1:t1",
+    "HERDR_WORKSPACE_ID": "w1"
+  }
+}

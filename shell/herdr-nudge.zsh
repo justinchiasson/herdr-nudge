@@ -99,13 +99,6 @@ function _herdr_nudge_herdr {
   "$_herdr_nudge_bin" "$@" </dev/null &>/dev/null
 }
 
-# The subshell takes the `$!` that `&!` sets, so the user's still names
-# their own last job. Not a process substitution: zsh kills those when
-# it exits, and a report sent just before the shell exits must still land.
-function _herdr_nudge_herdr_bg {
-  ( _herdr_nudge_herdr "$@" &! )
-}
-
 # Sets REPLY to the program a command line runs, skipping assignments and
 # wrappers like sudo. Quotes come off first, so `\vim` and `'vim'` are
 # still vim. Options after a wrapper are skipped but not their values, so
@@ -186,11 +179,37 @@ function _herdr_nudge_stop_watcher {
   _herdr_nudge_watcher=0
 }
 
+# Releases each label, then clears the title and labels we set. Herdr
+# 0.9.2 releases a finished command itself once the prompt is back, so
+# there the release does nothing, and the plugin can't take Herdr's own
+# release for the user moving on. Clearing the title of a pane nobody
+# claims makes Herdr send an `unknown` with no agent in it, on every
+# version, and that is what takes the banner down there. The caller picks
+# the seqs, so that a shell sending this from a background job still keeps
+# its own count going up. $1 is the clear's seq, then pairs of a label and
+# its seq.
+function _herdr_nudge_let_go {
+  local clear=$1
+  shift
+  while (( $# >= 2 )); do
+    _herdr_nudge_herdr pane release-agent $HERDR_PANE_ID --source herdr-nudge-zsh \
+      --agent $1 --seq $2
+    shift 2
+  done
+  _herdr_nudge_herdr pane report-metadata $HERDR_PANE_ID --source herdr-nudge-zsh \
+    --clear-title --clear-state-labels --seq $clear
+}
+
+# One background job, so the clear still comes after the release. The
+# subshell takes the `$!` that `&!` sets, so the user's still names their
+# own last job. Not a process substitution: zsh kills those when it
+# exits, and a release sent from zshexit must still land.
 function _herdr_nudge_release {
   [[ -n $_herdr_nudge_claim ]] || return 0
   _herdr_nudge_seq
-  _herdr_nudge_herdr_bg pane release-agent $HERDR_PANE_ID --source herdr-nudge-zsh \
-    --agent $_herdr_nudge_claim --seq $REPLY
+  local -a release=($_herdr_nudge_claim $REPLY)
+  _herdr_nudge_seq
+  ( _herdr_nudge_let_go $REPLY $release </dev/null &>/dev/null &! )
   _herdr_nudge_claim=
 }
 
@@ -282,16 +301,20 @@ function _herdr_nudge_left_behind {
   zf_rm -f $_herdr_nudge_mark.$_herdr_nudge_start 2>/dev/null
   (( $1 )) && labels+=($_herdr_nudge_cmd)
   [[ -n $_herdr_nudge_claim ]] && labels+=($_herdr_nudge_claim)
+  (( $#labels )) || return 0
+  local -a releases
   for label in ${(u)labels}; do
     _herdr_nudge_seq
-    _herdr_nudge_herdr pane release-agent $HERDR_PANE_ID --source herdr-nudge-zsh \
-      --agent $label --seq $REPLY
+    releases+=($label $REPLY)
   done
+  _herdr_nudge_seq
+  _herdr_nudge_let_go $REPLY $releases
 }
 
 function _herdr_nudge_claim_now {
-  # The title from the last command outlives a release, so replace it
-  # before the claim shows up in Herdr.
+  # The last command's title is still up after a typed-ahead line, which
+  # released nothing, or after Herdr's own release, so replace it before
+  # the claim shows up in Herdr.
   _herdr_nudge_seq
   _herdr_nudge_herdr pane report-metadata $HERDR_PANE_ID --source herdr-nudge-zsh \
     --title $_herdr_nudge_title --clear-state-labels --seq $REPLY
@@ -373,7 +396,7 @@ function _herdr_nudge_precmd {
   _herdr_nudge_seq
   local idle_seq=$REPLY
   # One background job, so the title lands before the idle it goes with.
-  # In a subshell for `$!`, as in _herdr_nudge_herdr_bg.
+  # In a subshell for `$!`, as in _herdr_nudge_release.
   ( {
     _herdr_nudge_herdr pane report-metadata $HERDR_PANE_ID --source herdr-nudge-zsh \
       --title $title --state-label idle=$word --seq $meta_seq

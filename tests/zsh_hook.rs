@@ -353,8 +353,8 @@ fn a_long_command_reports_working_then_its_result_then_releases() {
     let shell = Shell::new("zsh_long", CONFIG);
     let before = now_us();
     shell.run(&["sleep 1.6", "true"]);
-    let calls = shell.calls(6);
-    assert_eq!(calls.len(), 6, "{calls:#?}");
+    let calls = shell.calls(7);
+    assert_eq!(calls.len(), 7, "{calls:#?}");
     assert_eq!(
         calls.iter().filter(|c| is_pane_get(c)).count(),
         1,
@@ -388,10 +388,33 @@ fn a_long_command_reports_working_then_its_result_then_releases() {
     // exiting releases it.
     let release = find(&calls, "release-agent", ("--agent", "sleep"));
 
+    // Then the title and labels come off. On a pane nobody claims, that is
+    // the event that tells the plugin the user moved on, so it has to reach
+    // Herdr after the release.
+    let cleared = cleared(&calls);
+    assert_eq!(cleared.len(), 1, "{calls:#?}");
+    let (cleared_at, cleared) = cleared[0];
+    let released_at = calls.iter().position(|c| c.as_slice() == release).unwrap();
+    assert!(
+        released_at < cleared_at,
+        "cleared before the release: {calls:#?}"
+    );
+
     // Herdr keeps one --seq for reports and releases, and another for
     // metadata, and drops anything that doesn't go up.
     assert!(seq(working) < seq(idle) && seq(idle) < seq(release));
-    assert!(seq(clear) < seq(result));
+    assert!(seq(clear) < seq(result) && seq(result) < seq(cleared));
+}
+
+/// The metadata reports that take the title and labels off, with where
+/// each is in `calls`.
+fn cleared(calls: &[Vec<String>]) -> Vec<(usize, &Vec<String>)> {
+    calls
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c[1] == "report-metadata" && c.contains(&"--clear-title".to_owned()))
+        .inspect(|(_, c)| assert!(c.contains(&"--clear-state-labels".to_owned()), "{c:?}"))
+        .collect()
 }
 
 fn releases(calls: &[Vec<String>]) -> Vec<&Vec<String>> {
@@ -413,12 +436,17 @@ fn a_command_typed_at_the_prompt_releases_the_claim() {
         Line("true"),
         Line("sleep 2.5"),
     ]);
-    let calls = shell.calls(12);
+    let calls = shell.calls(14);
     let released = releases(&calls);
     assert_eq!(
         released.len(),
         2,
         "one from `true`, one on exit: {calls:#?}"
+    );
+    assert_eq!(
+        cleared(&calls).len(),
+        2,
+        "one after each release: {calls:#?}"
     );
     let first_idle = calls
         .iter()
@@ -436,12 +464,19 @@ fn a_command_typed_ahead_keeps_the_claim() {
     // take down, or race, the banner for a command the user walked away from.
     let shell = Shell::new("zsh_typed_ahead", CONFIG);
     shell.run(&["sleep 1.6", "true", "sleep 1.6"]);
-    let calls = shell.calls(11);
+    let calls = shell.calls(12);
     let released = releases(&calls);
     assert_eq!(
         released.len(),
         1,
         "only the shell exiting releases: {calls:#?}"
+    );
+    // A clear on `true` would take down the banner for `sleep 1.6` on
+    // Herdr 0.9.2, which releases the pane by itself.
+    assert_eq!(
+        cleared(&calls).len(),
+        1,
+        "only the shell exiting clears: {calls:#?}"
     );
     let last_idle = calls
         .iter()
@@ -463,12 +498,17 @@ fn a_slow_prompt_does_not_make_a_typed_ahead_command_release() {
         "true",
         "sleep 1.6",
     ]);
-    let calls = shell.calls(11);
+    let calls = shell.calls(12);
     let released = releases(&calls);
     assert_eq!(
         released.len(),
         1,
         "only the shell exiting releases: {calls:#?}"
+    );
+    assert_eq!(
+        cleared(&calls).len(),
+        1,
+        "only the shell exiting clears: {calls:#?}"
     );
 }
 
@@ -491,7 +531,7 @@ fn the_hook_leaves_the_users_reply_and_last_job_alone() {
     assert_eq!(words.len(), 3, "kept: {kept:?}");
     assert_eq!(words[0], "mine", "REPLY after the hook ran: {kept:?}");
     assert_eq!(words[1], words[2], "$! after the hook ran: {kept:?}");
-    let calls = shell.calls(6);
+    let calls = shell.calls(7);
     assert_eq!(releases(&calls).len(), 1, "`true` releases: {calls:#?}");
 }
 
@@ -499,7 +539,7 @@ fn the_hook_leaves_the_users_reply_and_last_job_alone() {
 fn a_failed_long_command_is_labelled_failed() {
     let shell = Shell::new("zsh_failed", CONFIG);
     shell.run(&["sleep 1.6; false"]);
-    let calls = shell.calls(6);
+    let calls = shell.calls(7);
     let result = find(&calls, "report-metadata", ("--state-label", "idle=failed"));
     assert_eq!(
         arg_after(result, "--title"),
@@ -513,10 +553,11 @@ fn the_shell_exiting_releases_the_claim() {
     // preexec, so only zshexit can release.
     let shell = Shell::new("zsh_exit", CONFIG);
     shell.run(&["sleep 1.6"]);
-    let calls = shell.calls(6);
+    let calls = shell.calls(7);
     let idle = find(&calls, "report-agent", ("--state", "idle"));
     let release = find(&calls, "release-agent", ("--agent", "sleep"));
     assert!(seq(idle) < seq(release));
+    assert_eq!(cleared(&calls).len(), 1, "{calls:#?}");
 }
 
 #[test]
@@ -627,6 +668,7 @@ fn an_exec_hidden_in_a_function_leaves_no_claim() {
             let working = find(&calls, "report-agent", ("--state", "working"));
             let release = find(&calls, "release-agent", ("--agent", "reload"));
             assert!(seq(working) < seq(release), "{calls:#?}");
+            assert_eq!(cleared(&calls).len(), 1, "{name}: {calls:#?}");
             assert!(
                 !calls
                     .iter()
@@ -659,6 +701,7 @@ fn an_exec_typed_ahead_releases_the_claim_the_shell_still_held() {
     let release = find(&calls, "release-agent", ("--agent", "sleep"));
     assert!(seq(idle) < seq(release), "{calls:#?}");
     assert_eq!(releases(&calls).len(), 1, "{calls:#?}");
+    assert_eq!(cleared(&calls).len(), 1, "{calls:#?}");
     shell.assert_no_marks();
 }
 

@@ -22,6 +22,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::classify::{self, Classification, ClassifySignal, PaneKind};
 use crate::cli::JobId;
@@ -29,7 +30,7 @@ use crate::config::Config;
 use crate::content;
 use crate::context::Context;
 use crate::event::{AgentStatus, Envelope, EventData, StatusEvent};
-use crate::herdr::{Cli, PaneInfo};
+use crate::herdr::{self, Cli, PaneInfo};
 use crate::notifier::{self, Notifier, Post};
 use crate::process::{Runner, Spawner};
 use crate::register;
@@ -318,15 +319,13 @@ pub fn test<R: Runner, S: Spawner>(deps: &Deps<R, S>, pane_id: &str, kind: PaneK
     let event = test_event(pane_id, &workspace_id, kind);
     let resolution = terminal::resolve(deps.config, deps.runner, deps.socket_path, &mut notes);
     let content = content::compose(kind, &event, label.as_deref(), None);
-    let outcome = match post(
-        deps,
-        &event,
+    let subject = Subject {
         kind,
-        event.agent.as_deref(),
-        &content,
-        &resolution,
-        &mut notes,
-    ) {
+        agent_label: event.agent.as_deref(),
+        // Nothing claimed the pane for a test, so nothing will release it.
+        released_by_herdr: false,
+    };
+    let outcome = match post(deps, &event, &subject, &content, &resolution, &mut notes) {
         Ok((job_id, group)) => {
             // Replaced on screen by this one, same group.
             forget(deps.state, for_pane(&jobs, pane_id).into_iter(), &mut notes);
@@ -506,6 +505,21 @@ fn status_changed<R: Runner, S: Spawner>(
         return Outcome::AlreadyShowing(id.to_string());
     }
 
+    // Herdr 0.9.2 releases a shell command itself once the prompt is back,
+    // within a second of the `done`
+    // (`tests/fixtures/events/shell/released-by-herdr-after-done-0.9.2.json`).
+    // The user hasn't come back, so the banner stays. When the next command
+    // starts, the zsh hook clears the pane's title, and the `unknown` with
+    // no agent that follows takes the banner down
+    // (`shell/cleared-on-next-command-0.9.2.json`).
+    //
+    // On an older server the release comes from the reporter, when the next
+    // command starts. It still takes the banner down there, because other
+    // reporters, like herdr-ohmyzsh, don't send a clear after it.
+    let released = event.agent_status == AgentStatus::Unknown
+        && event.agent.is_some()
+        && newest.is_some_and(|(_, job)| job.released_by_herdr && job.agent_label == event.agent);
+
     let outcome = notify(deps, event, context, notes);
 
     // Whatever was up is out of date: the pane has moved on, since it isn't
@@ -522,6 +536,8 @@ fn status_changed<R: Runner, S: Spawner>(
             for_pane(jobs, &event.pane_id).into_iter(),
             notes,
         );
+    } else if released {
+        notes.push("released, so the banner stays up".to_owned());
     } else if !mine.is_empty() {
         withdraw(deps.state, deps.spawner, mine.iter().copied(), notes);
     }
@@ -562,9 +578,10 @@ fn notify<R: Runner, S: Spawner>(
         .as_deref()
         .or(info.as_ref().and_then(|i| i.agent.as_deref()));
 
+    let manifests = manifests(&cli, deps.state, deps.now_ms, notes);
     let classification = classify::classify(
         deps.config,
-        &manifests(&cli, deps.state, deps.now_ms, notes),
+        &manifests,
         agent_label,
         info.as_ref().map(PaneInfo::has_agent_session),
     );
@@ -593,15 +610,13 @@ fn notify<R: Runner, S: Spawner>(
         info.as_ref()
             .and_then(|i| i.terminal_title_stripped.as_deref()),
     );
-    match post(
-        deps,
-        event,
-        classification.kind,
+    let released_by_herdr = released_by_herdr(&cli, agent_label, &manifests, notes);
+    let subject = Subject {
+        kind: classification.kind,
         agent_label,
-        &content,
-        &resolution,
-        notes,
-    ) {
+        released_by_herdr,
+    };
+    match post(deps, event, &subject, &content, &resolution, notes) {
         Ok((job_id, group)) => Outcome::Posted(Posted {
             job_id,
             group,
@@ -613,13 +628,20 @@ fn notify<R: Runner, S: Spawner>(
     }
 }
 
+/// What a banner is about, worked out before it's posted.
+struct Subject<'a> {
+    kind: PaneKind,
+    agent_label: Option<&'a str>,
+    /// See [`released_by_herdr`].
+    released_by_herdr: bool,
+}
+
 /// Writes the job and puts the banner up. Returns the job id and group, or
 /// why nothing was posted.
 fn post<R: Runner, S: Spawner>(
     deps: &Deps<R, S>,
     event: &StatusEvent,
-    kind: PaneKind,
-    agent_label: Option<&str>,
+    subject: &Subject<'_>,
     content: &content::Content,
     resolution: &terminal::Resolution,
     notes: &mut Vec<String>,
@@ -634,14 +656,15 @@ fn post<R: Runner, S: Spawner>(
         id: job_id.to_string(),
         pane_id: event.pane_id.clone(),
         workspace_id: event.workspace_id.clone(),
-        agent_label: agent_label.map(str::to_owned),
-        kind,
+        agent_label: subject.agent_label.map(str::to_owned),
+        kind: subject.kind,
         status: event.agent_status,
         group: group.clone(),
         bundle_id: resolution.bundle_id.clone(),
         // The config wins at click time too, so there is nothing to look
         // for again.
         detect_at_click: resolution.source != terminal::TerminalSource::DefaultConfig,
+        released_by_herdr: subject.released_by_herdr,
         socket_path: deps.socket_path.to_owned(),
         notifier_path: deps.notifier_bin.to_owned(),
         created_at_ms: deps.now_ms,
@@ -655,7 +678,7 @@ fn post<R: Runner, S: Spawner>(
 
     // Before the job is written: it can run `defaults`, and a job waiting
     // on disk with no banner yet is one a concurrent hook can delete first.
-    let image = logo_for(deps, kind, agent_label);
+    let image = logo_for(deps, subject.kind, subject.agent_label);
 
     // Written before anything is on screen, because a banner can be clicked
     // the moment it appears and a click with no job file does nothing.
@@ -689,7 +712,79 @@ fn post<R: Runner, S: Spawner>(
             "could not start the notifier: {e}"
         )));
     }
+    // Only a shell command's release is certain: its prompt is back as it
+    // finishes. An agent that stays running after its `done` isn't
+    // released, and Herdr plays its own sound. Herdr plays nothing for an
+    // `idle`, so neither do we.
+    if subject.released_by_herdr
+        && subject.kind == PaneKind::Shell
+        && event.agent_status == AgentStatus::Done
+    {
+        show_in_herdr(deps, content, notes);
+    }
     Ok((job_id, group))
+}
+
+/// Whether Herdr releases this pane itself once the prompt is back. From
+/// 0.9.2 it does that for a label a reporter claimed and Herdr doesn't
+/// recognise as an agent, whatever the status and whatever we classify it
+/// as. For our hook's commands the release came 93 to 532 ms after the
+/// `done` in twelve live runs
+/// (`shell/released-by-herdr-after-done-0.9.2.json`). Two things follow.
+/// The release doesn't mean the user moved on. And Herdr shows its toast
+/// and plays its `done` sound only if the pane is still `done` about a
+/// second later (`[ui.toast] delay_seconds`), so for a shell command it
+/// usually does neither, and we ask it to. If the release comes later than
+/// that, or `delay_seconds` is 0, the user gets both. A custom agent run
+/// once, which exits as it finishes, loses Herdr's sound too; we don't ask
+/// for that one. Up to 0.9.1 the pane stays as it is until the next
+/// command.
+///
+/// An agent put down as a shell command by `known_agents_remove` is still
+/// one Herdr recognises, so it's never released. Before the agent list is
+/// first cached, every label looks unrecognised.
+fn released_by_herdr<R: Runner>(
+    cli: &Cli<'_, R>,
+    agent_label: Option<&str>,
+    manifests: &BTreeSet<String>,
+    notes: &mut Vec<String>,
+) -> bool {
+    let Some(label) = agent_label else {
+        return false;
+    };
+    if manifests.contains(label) || herdr::AGENTS_WITHOUT_MANIFEST.contains(&label) {
+        return false;
+    }
+    match cli.server_version() {
+        Ok(version) => version >= (0, 9, 2),
+        // Taken as 0.9.2 or later: on an older server that means two sounds
+        // and a banner that stays until the next command, where the other
+        // way a newer server's banner would come down at once, silent.
+        Err(e) => {
+            notes.push(format!("could not ask the server's version: {e}"));
+            true
+        }
+    }
+}
+
+/// Has Herdr show the banner's text with its `done` sound, which it does by
+/// the user's Herdr settings. A second one within a second is dropped by
+/// Herdr, so two commands ending together get one sound.
+fn show_in_herdr<R: Runner, S: Spawner>(
+    deps: &Deps<R, S>,
+    content: &content::Content,
+    notes: &mut Vec<String>,
+) {
+    match herdr::show_notification(
+        deps.socket_path,
+        &content.title,
+        &content.message,
+        Duration::from_secs(1),
+    ) {
+        Ok(reply) if reply.shown => {}
+        Ok(reply) => notes.push(format!("herdr showed nothing: {}", reply.reason)),
+        Err(e) => notes.push(format!("could not ask herdr for its sound: {e}")),
+    }
 }
 
 /// Either side of the config could want this status. Both are checked with

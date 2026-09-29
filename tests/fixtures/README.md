@@ -419,6 +419,26 @@ isn't a fixture.
 25. **`pane get` against a stopped server never returns.** With the server
     under SIGSTOP it was still waiting after 40 s, on both versions. With
     no server at all it fails at once (`server_not_running`, exit 1).
+26. **0.9.2 releases a reported shell command by itself once its prompt is
+    back**, in the same second as the `done`
+    (`shell/released-by-herdr-after-done-0.9.2`). The event looks like a
+    reporter's own release on every version: `unknown`, still naming the
+    agent. On 0.9.0 and 0.9.1 that release only came with the next
+    command, and on 0.9.2 the hook's own release then does nothing. So the
+    hook clears the pane's title and labels after it releases, and on a
+    pane nobody claims Herdr answers with an `unknown` naming no agent
+    (`shell/cleared-on-next-command-0.9.2`). Checked with the hook in a
+    throwaway server on all three versions (`raw/events-2026-09-29-herdr-0.9.2-clear.log`
+    is the 0.9.2 run).
+27. **`notification.show` skips the check that loses 0.9.2's shell sound.**
+    Herdr shows its toast and plays its `done` sound only if the pane is
+    still `done` about a second later (`[ui.toast] delay_seconds`), and a
+    released shell command isn't. A `notification.show` doesn't point at a
+    pane and isn't checked, so it gets Herdr's own sound and toast by the
+    user's Herdr settings. With no client attached the server answers
+    `shown: false` (`socket/notification-show`, same on 0.9.0 and 0.9.2),
+    and it takes one a second across the server (`rate_limited`). Read in
+    Herdr's source, not measured.
 
 ## Still missing
 

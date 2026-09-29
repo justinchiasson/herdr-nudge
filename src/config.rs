@@ -43,7 +43,9 @@ pub struct Notifications {
     /// two sounds. With this off a banner is silent when Herdr plays nothing:
     /// for `idle`, while no Herdr client is attached, when its `[ui.sound]`
     /// is off or mutes that agent (droid by default), and for a `done` the
-    /// pane has already left by the time Herdr checks.
+    /// pane has already left by the time Herdr checks. From Herdr 0.9.2 that
+    /// last one is usually the case for a shell command's `done`, so the
+    /// handler asks Herdr to play its sound then, whatever this says.
     pub sound: bool,
     pub agent_logos: bool,
     pub show_workspace: bool,
@@ -326,7 +328,8 @@ pub fn example() -> String {
 # How long a banner stays on screen is macOS's alert style for Herdr Nudge:
 # Temporary or Persistent (Banners or Alerts on older macOS).
 clickable_secs = {clickable_secs}
-# Herdr usually plays its own sound for the same event; true adds ours.
+# Herdr usually plays its own sound for the same event; true also plays the
+# macOS notification sound with each notification.
 sound = {sound}
 # The agent's logo on the right of the banner.
 agent_logos = {agent_logos}
