@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "lsappinfo",
+    "info",
+    "-only",
+    "bundleid",
+    "ASN:0x0-0xfffff0:"
+  ],
+  "captured_at": "2026-09-29T10:32:52",
+  "macos_version": "27.0.1",
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": ""
+}

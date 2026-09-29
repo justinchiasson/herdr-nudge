@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "lsappinfo",
+    "front"
+  ],
+  "captured_at": "2026-09-29T10:45:27",
+  "macos_version": "27.0.1",
+  "exit_code": 0,
+  "stdout": "ASN:0x0-0x3f03f:\n",
+  "stderr": ""
+}

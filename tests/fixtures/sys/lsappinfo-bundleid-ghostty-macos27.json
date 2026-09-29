@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "lsappinfo",
+    "info",
+    "-only",
+    "bundleid",
+    "ASN:0x0-0x797a973:"
+  ],
+  "captured_at": "2026-09-29T15:35:48",
+  "macos_version": "27.0",
+  "exit_code": 0,
+  "stdout": "[ NULL ]  ASN:0x0-0x797a973: \n    bundleID=\"com.mitchellh.ghostty\"\n    bundle path=[ NULL ] \n    executable path=[ NULL ] \n !cgsConnection !signalled type=[ NULL ]  flavor=[ NULL ]  Version=[ NULL ]  Arch=!!none \n\n",
+  "stderr": ""
+}
