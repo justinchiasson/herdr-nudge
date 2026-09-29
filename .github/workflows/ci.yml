@@ -61,3 +61,19 @@ jobs:
           # compare bytes. build-bin.sh records a hash of what it built from
           # instead.
           tools/build-bin.sh --check
+
+      # The other steps use the Rust that comes with the runner, so nothing
+      # else notices when the code starts needing a newer one than Cargo.toml
+      # says. Some dependencies have code for one chip only, so this checks
+      # both chips from one job. It comes last so a failure here doesn't skip
+      # the binary checks.
+      - name: Minimum Rust version
+        if: runner.arch == 'ARM64'
+        run: |
+          set -eu
+          min=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          [ -n "$min" ] || { echo "no rust-version = \"...\" line in Cargo.toml"; exit 1; }
+          rustup toolchain install "$min" --profile minimal --no-self-update \
+            --target x86_64-apple-darwin --target aarch64-apple-darwin
+          cargo "+$min" check --locked --all-targets \
+            --target x86_64-apple-darwin --target aarch64-apple-darwin

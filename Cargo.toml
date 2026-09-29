@@ -2,7 +2,7 @@
 name = "herdr-nudge"
 version = "1.0.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 publish = false
 description = "macOS notifications for Herdr panes, click to focus the pane"

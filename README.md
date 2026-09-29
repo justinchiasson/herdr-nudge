@@ -298,11 +298,12 @@ If you're still stuck, open an issue with the output of [`doctor`](#commands) an
 
 ## Development
 
-`cargo test` runs the tests. The manifest runs the committed universal binary
-in `bin/`, so after changing the source, `tools/build-bin.sh` rebuilds it
-(needs both Rust targets: `rustup target add x86_64-apple-darwin
-aarch64-apple-darwin`), and it's committed with the change. After a Herdr
-upgrade, see `tests/fixtures/README.md`.
+Building from source needs Rust 1.88 or later. `cargo test` runs the
+tests. The manifest runs the committed universal binary in `bin/`, so after
+changing the source, `tools/build-bin.sh` rebuilds it (needs both Rust
+targets: `rustup target add x86_64-apple-darwin aarch64-apple-darwin`), and
+it's committed with the change. After a Herdr upgrade, see
+`tests/fixtures/README.md`.
 
 ## License
 
