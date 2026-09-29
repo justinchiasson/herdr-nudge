@@ -1,6 +1,6 @@
 id = "herdr-nudge"
 name = "Herdr Nudge"
-version = "1.0.0"
+version = "1.0.1"
 description = "macOS notifications when an agent or a long shell command needs you"
 min_herdr_version = "0.9.0"
 platforms = ["macos"]
