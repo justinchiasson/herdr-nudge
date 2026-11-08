@@ -155,7 +155,9 @@ pub fn live_jobs<S: Spawner>(
             .iter()
             .partition(|(_, old)| live.iter().any(|(_, job)| job.pane_id == old.pane_id));
         forget(state, shadowed.into_iter(), notes);
-        withdraw(state, spawner, alone.into_iter(), notes);
+        // No fallback needed. `--cleanup` clears every older job when the server
+        // starts, and a copy can't be deleted while a server is using it.
+        withdraw(state, spawner, None, alone.into_iter(), notes);
     }
     live
 }
@@ -256,7 +258,8 @@ pub fn cleanup<R: Runner, S: Spawner>(
             "dropped {} job(s) from before the restart",
             jobs.len()
         ));
-        withdraw(state, spawner, jobs.iter(), &mut notes);
+        let running = bundle.map(notifier::binary_in);
+        withdraw(state, spawner, running.as_deref(), jobs.iter(), &mut notes);
     }
 
     let agents = match herdr_bin {
@@ -452,7 +455,13 @@ fn container_closed<R: Runner, S: Spawner>(
         return Outcome::NothingShowing;
     }
     let groups: BTreeSet<String> = gone.iter().map(|(_, job)| job.group.clone()).collect();
-    withdraw(deps.state, deps.spawner, gone.into_iter(), notes);
+    withdraw(
+        deps.state,
+        deps.spawner,
+        Some(deps.notifier_bin),
+        gone.into_iter(),
+        notes,
+    );
     Outcome::PanesGone(groups.into_iter().collect())
 }
 
@@ -471,7 +480,13 @@ fn withdraw_all<R: Runner, S: Spawner>(
         return Outcome::NothingShowing;
     };
     let group = job.group.clone();
-    withdraw(deps.state, deps.spawner, mine.iter().copied(), notes);
+    withdraw(
+        deps.state,
+        deps.spawner,
+        Some(deps.notifier_bin),
+        mine.iter().copied(),
+        notes,
+    );
     Outcome::Withdrawn(group)
 }
 
@@ -539,7 +554,13 @@ fn status_changed<R: Runner, S: Spawner>(
     } else if released {
         notes.push("released, so the banner stays up".to_owned());
     } else if !mine.is_empty() {
-        withdraw(deps.state, deps.spawner, mine.iter().copied(), notes);
+        withdraw(
+            deps.state,
+            deps.spawner,
+            Some(deps.notifier_bin),
+            mine.iter().copied(),
+            notes,
+        );
     }
     outcome
 }
@@ -917,19 +938,27 @@ fn ours_for_pane<'a, R: Runner, S: Spawner>(
 
 /// Takes the notifications down and deletes the jobs. The group is per pane,
 /// so jobs for one pane share a single `-remove`.
+///
+/// A job names the notifier of the copy that posted it, and that copy can be
+/// gone. On Herdr 0.9.4 and later an update installs to a new folder, and
+/// Herdr deletes the old folder when it next starts. Every time we ran this,
+/// that happened before `--cleanup`. Every copy is the same app to macOS, so
+/// the running copy can remove what an older one posted.
 fn withdraw<'a, S: Spawner>(
     state: &StateDir,
     spawner: &S,
+    running_notifier: Option<&Path>,
     jobs: impl Iterator<Item = &'a StoredJob>,
     notes: &mut Vec<String>,
 ) {
     let mut removed = BTreeSet::new();
     for (id, job) in jobs {
-        if removed.insert((&job.notifier_path, &job.group)) {
-            let notifier = Notifier {
-                binary: &job.notifier_path,
-                spawner,
-            };
+        let binary = match running_notifier {
+            Some(running) if !job.notifier_path.is_file() => running,
+            _ => job.notifier_path.as_path(),
+        };
+        if removed.insert((binary, &job.group)) {
+            let notifier = Notifier { binary, spawner };
             match notifier.remove(&job.group) {
                 Ok(()) => notes.push(format!("withdrew {} ({})", job.group, job.status)),
                 Err(e) => notes.push(format!("could not remove group {}: {e}", job.group)),

@@ -2277,3 +2277,64 @@ fn cleanup_registers_before_it_withdraws() {
         "marker present at the -remove spawn; notes {notes:?}"
     );
 }
+
+/// Runs the startup hook with the job's notifier moved to `job_notifier`, and
+/// returns the program its `-remove` ran and the running copy's notifier.
+fn cleanup_removes_through(harness: &mut Harness, job_notifier: PathBuf) -> (String, PathBuf) {
+    let bundle = registrable(harness);
+    let id = harness.state.job_ids().unwrap().remove(0);
+    let Ok(Loaded::Found(mut job)) = harness.state.job(&id) else {
+        panic!("no job for w1:p1");
+    };
+    job.notifier_path = job_notifier;
+    harness.state.save_job(&job).unwrap();
+    harness.spy.spawns.borrow_mut().clear();
+
+    let (notes, _) = handler::cleanup(
+        &harness.state,
+        Some(&bundle),
+        None,
+        &harness.runner,
+        &harness.spy,
+        harness.now_ms + 1,
+    );
+
+    assert_eq!(
+        removes(&harness.spy),
+        vec!["herdr-nudge-w1:p1"],
+        "groups removed; notes {notes:?}"
+    );
+    let program = harness.spy.spawns.borrow()[0][0].clone();
+    (program, herdr_nudge::notifier::binary_in(&bundle))
+}
+
+#[test]
+fn cleanup_uses_the_running_notifier_when_the_jobs_copy_is_gone() {
+    let mut harness = blocked_on("cleanup_old_copy_gone", "w1:p1");
+    let deleted = harness.plugin_root.join("deleted-copy/terminal-notifier");
+
+    let (program, running) = cleanup_removes_through(&mut harness, deleted);
+
+    assert_eq!(
+        program,
+        running.display().to_string(),
+        "program for -remove"
+    );
+}
+
+#[test]
+fn cleanup_uses_the_jobs_notifier_while_that_copy_exists() {
+    let mut harness = blocked_on("cleanup_old_copy_there", "w1:p1");
+    let old_copy = harness.plugin_root.join("old-copy");
+    fs::create_dir_all(&old_copy).unwrap();
+    let old_notifier = old_copy.join("terminal-notifier");
+    fs::write(&old_notifier, b"").unwrap();
+
+    let (program, _) = cleanup_removes_through(&mut harness, old_notifier.clone());
+
+    assert_eq!(
+        program,
+        old_notifier.display().to_string(),
+        "program for -remove"
+    );
+}

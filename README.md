@@ -50,9 +50,13 @@ later. Nothing else to install.
 That's all for agents. For long shell commands, add the
 [zsh hook](#shell-commands-optional-zsh) too.
 
-To update, run the install command again. To remove it, run
-`herdr plugin uninstall herdr-nudge`, and take the zsh lines out of
-`.zshrc` if you added them.
+To update, run `herdr plugin update herdr-nudge` (Herdr 0.9.4 or later) or the
+install command again. If you use the zsh hook, restart Herdr afterwards
+(`herdr server stop`, then `herdr`) and open a new pane, so your shells get the
+new hook.
+
+To remove it, run `herdr plugin uninstall herdr-nudge`, and take the zsh lines
+out of `.zshrc` if you added them.
 
 **Tips**
 
@@ -72,7 +76,7 @@ A small zsh hook does that. To turn it on:
 1. Add the hook to your `.zshrc`:
 
    ```sh
-   ~/.config/herdr/plugins/github/herdr-nudge-*/bin/herdr-nudge setup-zsh
+   ~/.config/herdr/plugins/github*/herdr-nudge-*/**/bin/herdr-nudge(om[1]) setup-zsh
    ```
 
    It shows the three lines it will add and changes nothing until you say
@@ -114,17 +118,18 @@ up in Notification Center.
 ## Commands
 
 You don't need these day to day. They're for checking your setup and trying
-things out. The plugin isn't on your `PATH`, so run it by its path, which
-stays the same across updates:
+things out. The plugin isn't on your `PATH`, and on Herdr 0.9.4 and later its
+folder changes with each update, so this finds the newest copy (in zsh, the
+macOS default):
 
 ```sh
-~/.config/herdr/plugins/github/herdr-nudge-*/bin/herdr-nudge doctor
+~/.config/herdr/plugins/github*/herdr-nudge-*/**/bin/herdr-nudge(om[1]) doctor
 ```
 
 If you use it often, add an alias to your `.zshrc`:
 
 ```sh
-alias herdr-nudge='~/.config/herdr/plugins/github/herdr-nudge-*/bin/herdr-nudge'
+alias herdr-nudge='~/.config/herdr/plugins/github*/herdr-nudge-*/**/bin/herdr-nudge(om[1])'
 ```
 
 | Command | What it does |

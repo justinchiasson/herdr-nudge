@@ -58,6 +58,10 @@ PGREP = ["pgrep", "-a", "-lf", "^-?([^ ]*/)?herdr( |$)"]
 STABLE = {"type", "code", "id", "kind", "agent"}
 # Placeholder-shaped, so extract.scrub leaves it alone.
 SESSION_ID = "00000000-0000-4000-8000-000000000000"
+# `osascript` exits 0 whatever LSRegisterURL returned, so the number it prints
+# is the only answer, and to `shape` all numbers look alike. The answers we know
+# become words first. Any other number stays a number, and shows up as moved.
+REGISTER_ANSWERS = {"0": "registered", "-43": "no such file"}
 
 # Captures that repeat another one's command with different processes or apps
 # around, so they add no format to check, or that can't run unattended.
@@ -377,6 +381,13 @@ class Verify:
         mode, other = ("dark", "light") if dark else ("light", "dark")
         SKIPPED[f"sys/defaults-appearance-{other}"] = f"same command, and macOS is in {mode} mode"
         self.tool(f"defaults-appearance-{mode}", appearance)
+        # Registers the checkout's notifier, which `doctor` also does every run.
+        # The script comes from the capture, which the tests hold to the real one.
+        with open(os.path.join(FIXTURES, "sys", "osascript-register-bundle.json"), encoding="utf-8") as f:
+            register = json.load(f)["argv"][:-1]
+        answer = lambda text: REGISTER_ANSWERS.get(text.strip(), text)
+        self.tool("osascript-register-bundle", register + [os.path.join(ROOT, "vendor/HerdrNudge.app")], mask=answer)
+        self.tool("osascript-register-missing", register + ["/tmp/herdr-nudge-no-such/HerdrNudge.app"], mask=answer)
         # Its values are this Mac's notification settings and the checkout's
         # path, so only the names are compared. They sit in a 20-character
         # column after a 2-space indent, and "notification centre" fills it.
