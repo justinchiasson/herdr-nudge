@@ -22,6 +22,11 @@ with the newest older one if there isn't one. --record saves a new version's
 capture only where something moved: an older capture that still matches
 already describes the new version, so a copy would only add files. sys/
 captures record macOS tools, not Herdr, and are never re-recorded here.
+
+Exit codes: 0 nothing moved, 1 something moved or a capture isn't re-run here
+yet, 2 it stopped before the end with nothing moved so far. A 2 can still be a
+Herdr change, when a command it needs to set up the state stopped working; the
+message says which.
 """
 import datetime
 import fcntl
@@ -97,6 +102,8 @@ class Verify:
         self.children = []
         home = extract.redact(os.path.expanduser("~"), {}, [0])
         self.homes = sorted({home, "/Users/dev", "/private" + SCRATCH, SCRATCH}, key=len, reverse=True)
+        macos = subprocess.run(["sw_vers", "-productVersion"], capture_output=True, text=True).stdout
+        self.macos = version_of(macos)[:1] or (0,)
 
     # Comparing
 
@@ -224,15 +231,25 @@ class Verify:
         save = {"captured_at": now(), "herdr_version": self.version, **live}
         self.compare("socket", base, live, ["response"], save)
 
-    def tool(self, base, argv, keep=None, mask=None):
+    def tool(self, base, argv, keep=None, mask=None, fields=("exit_code", "stdout", "stderr")):
         """`keep`: only stdout lines starting with one of these pids."""
         proc = subprocess.run(argv, capture_output=True, text=True)
         stdout = proc.stdout
         if keep is not None:
             stdout = "".join(l for l in stdout.splitlines(True) if l.split(" ", 1)[0] in keep)
         live = {"exit_code": proc.returncode, "stdout": stdout, "stderr": proc.stderr}
-        self.compare("sys", base, live, ["exit_code", "stdout", "stderr"], None, mask)
+        self.compare("sys", self.for_this_macos(base), live, list(fields), None, mask)
         return stdout
+
+    def for_this_macos(self, base):
+        """On macOS 27 or later, the `-macos27` capture of `base` if there is
+        one, since lsappinfo prints differently there."""
+        newer = f"{base}-macos27"
+        if self.macos < (27,) or not os.path.exists(os.path.join(FIXTURES, "sys", newer + ".json")):
+            return base
+        SKIPPED.pop(f"sys/{newer}", None)
+        SKIPPED[f"sys/{base}"] = "macOS 26's output, and this is macOS 27"
+        return newer
 
     def pane(self, pane_id):
         return json.loads(self.herdr("pane", "get", pane_id).stdout)["result"]["pane"]
@@ -303,6 +320,11 @@ class Verify:
                          {"title": "sleep 8 · done", "body": "herdr-nudge", "sound": "done"})
 
         # A shell command claimed the way our zsh hook does, then released.
+        # Herdr 0.9.2 and later drop a claim about a second after they see the
+        # pane's shell idle, so a command runs in it meanwhile, as one does
+        # under the hook. On an idle shell, a slow Mac lost the claim before
+        # the queries below got to it.
+        self.herdr("pane", "run", shell, "sleep 600")
         self.herdr("pane", "report-agent", shell, "--source", "verify", "--agent", "make",
                    "--state", "working", "--seq", "1")
         self.herdr("pane", "report-metadata", shell, "--source", "verify", "--title",
@@ -311,6 +333,7 @@ class Verify:
         self.cli("pane-get-unfocused", "pane", "get", shell)
         failed = self.split(shell)
         self.titled(failed)
+        self.herdr("pane", "run", failed, "sleep 600")
         self.herdr("pane", "report-agent", failed, "--source", "verify", "--agent", "make",
                    "--state", "working", "--seq", "1")
         self.herdr("pane", "report-metadata", failed, "--source", "verify", "--title",
@@ -361,8 +384,15 @@ class Verify:
         self.tool("ps-env-server-plain", ["ps", "-Eww", "-o", "command=", "-p", str(server.pid)])
 
         front = self.tool("lsappinfo-front", ["lsappinfo", "front"]).strip()
-        info = self.tool("lsappinfo-bundleid-ghostty", ["lsappinfo", "info", "-only", "bundleid", front])
-        self.tool("lsappinfo-bundleid-gone", ["lsappinfo", "info", "-only", "bundleid", "ASN:0x0-0xfffff0:"])
+        # Only the bundle id line is compared, since it's all the plugin
+        # reads. On macOS 27 the lines around it depend on the app: the one
+        # in front on GitHub's Macs has empty fields and says `(in front)`.
+        bundle_line = lambda text: "".join(
+            l for l in text.splitlines(True) if l.strip().startswith(('"CFBundleIdentifier"=', "bundleID=")))
+        info = self.tool("lsappinfo-bundleid-ghostty", ["lsappinfo", "info", "-only", "bundleid", front],
+                         mask=bundle_line)
+        self.tool("lsappinfo-bundleid-gone", ["lsappinfo", "info", "-only", "bundleid", "ASN:0x0-0xfffff0:"],
+                  mask=bundle_line)
         # One line on macOS 26, an info block with a bundleID= line on 27.
         found = re.search(r'(?:"CFBundleIdentifier"|bundleID)="([^"]+)"', info)
         if not found:
@@ -380,7 +410,9 @@ class Verify:
         dark = subprocess.run(appearance, capture_output=True, text=True).stdout.strip() == "Dark"
         mode, other = ("dark", "light") if dark else ("light", "dark")
         SKIPPED[f"sys/defaults-appearance-{other}"] = f"same command, and macOS is in {mode} mode"
-        self.tool(f"defaults-appearance-{mode}", appearance)
+        # Not stderr: the plugin reads only the exit code and `Dark`, and
+        # macOS 27 words the error differently.
+        self.tool(f"defaults-appearance-{mode}", appearance, fields=("exit_code", "stdout"))
         # Registers the checkout's notifier, which `doctor` also does every run.
         # The script comes from the capture, which the tests hold to the real one.
         with open(os.path.join(FIXTURES, "sys", "osascript-register-bundle.json"), encoding="utf-8") as f:
@@ -388,6 +420,12 @@ class Verify:
         answer = lambda text: REGISTER_ANSWERS.get(text.strip(), text)
         self.tool("osascript-register-bundle", register + [os.path.join(ROOT, "vendor/HerdrNudge.app")], mask=answer)
         self.tool("osascript-register-missing", register + ["/tmp/herdr-nudge-no-such/HerdrNudge.app"], mask=answer)
+        # On GitHub's Macs nobody has ever answered the notification prompt and
+        # Notification Center isn't running, so this lists problems with the
+        # machine, not with macOS.
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            SKIPPED["sys/terminal-notifier-diagnose"] = "GitHub's Macs have notifications turned off"
+            return
         # Its values are this Mac's notification settings and the checkout's
         # path, so only the names are compared. They sit in a 20-character
         # column after a 2-space indent, and "notification centre" fills it.
@@ -505,11 +543,27 @@ def main():
         raise SystemExit(__doc__)
     verify = Verify(record=len(sys.argv) == 2)
     setup()
+    # Every step that can't go on raises SystemExit with the reason.
+    unfinished = None
     try:
         verify.run()
+    except SystemExit as e:
+        if not isinstance(e.code, str):
+            raise
+        unfinished = e.code
     finally:
         teardown(verify.children)
         shutil.rmtree(SCRATCH, ignore_errors=True)
+    if unfinished:
+        print(f"\nstopped: {unfinished}")
+        # What moved before it stopped still moved, and --record may have
+        # saved some of it already.
+        if verify.recorded:
+            print("recorded:", ", ".join(verify.recorded))
+        if verify.drifted:
+            print(f"{len(verify.checked)} checked before stopping, {verify.drifted} moved")
+            sys.exit(1)
+        sys.exit(2)
     print()
     sys.exit(verify.report())
 

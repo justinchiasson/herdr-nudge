@@ -1,0 +1,156 @@
+name: Herdr watch
+
+# Runs the checks that use a real Herdr against the newest stable release, on
+# every Mac GitHub has. It runs once for each combination of that Herdr, the
+# parts of oh-my-zsh the zsh hook runs next to, and this repo's plugin and
+# checks, and again daily until that combination passes. A failure emails
+# whoever last changed the schedule line.
+#
+# Kept out of ci.yml, whose badge says whether main passes its own tests.
+on:
+  schedule:
+    # UTC, so a failure email comes in early in the maintainer's morning. Not
+    # on the hour, when GitHub's scheduler is busiest and runs late.
+    - cron: "37 14 * * *"
+  push:
+    branches: [main]
+    paths:
+      - bin/herdr-nudge
+      - herdr-plugin.toml
+      - vendor/**
+      - tools/scratch-check.py
+      - tools/ci/**
+      - tools/fixtures/**
+      - tests/fixtures/**
+      - .github/workflows/herdr-watch.yml
+  workflow_dispatch:
+    inputs:
+      herdr:
+        description: "Herdr release tag (v0.9.6, or a preview-… one). Empty for the newest stable. Runs even if it passed before."
+        required: false
+        default: ""
+
+concurrency:
+  group: herdr-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      herdr: ${{ steps.versions.outputs.herdr }}
+      omz: ${{ steps.versions.outputs.omz }}
+      key: ${{ steps.versions.outputs.key }}
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANT: ${{ inputs.herdr }}
+          # The same files as the push paths above; keep the two lists together.
+          FILES: ${{ hashFiles('bin/herdr-nudge', 'herdr-plugin.toml', 'vendor/**', 'tools/scratch-check.py', 'tools/ci/**', 'tools/fixtures/**', 'tests/fixtures/**', '.github/workflows/herdr-watch.yml') }}
+        run: |
+          set -euo pipefail
+          # releases/latest skips Herdr's preview builds.
+          tag=${WANT:-$(gh api repos/herdrdev/herdr/releases/latest --jq .tag_name)}
+          [[ $tag =~ ^(v[0-9]+\.[0-9]+\.[0-9]+|preview-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]+)$ ]] ||
+            { echo "not a Herdr release tag: $tag"; exit 1; }
+          # oh-my-zsh has no releases and changes most days, mostly in plugins
+          # nobody here loads. So this takes the newest commit to its core and
+          # to the default theme and plugin, which is what the check loads.
+          # One failed lookup stops the run, rather than leaving an older
+          # commit to win.
+          commits=$(for path in lib oh-my-zsh.sh themes/robbyrussell.zsh-theme plugins/git; do
+                      gh api "repos/ohmyzsh/ohmyzsh/commits?path=$path&per_page=1" \
+                        --jq '.[0] | "\(.commit.committer.date) \(.sha)"' || exit 1
+                    done)
+          omz=$(sort <<<"$commits" | tail -1 | cut -d' ' -f2)
+          [[ $omz =~ ^[0-9a-f]{40}$ ]] || { echo "no oh-my-zsh commit: $omz"; exit 1; }
+          echo "Herdr $tag, oh-my-zsh $omz, files $FILES"
+          {
+            echo "herdr=$tag"
+            echo "omz=$omz"
+            echo "key=herdr-watch-$tag-omz-${omz:0:12}-$FILES"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Passed before?
+        id: seen
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/cache/restore@v6
+        with:
+          path: .herdr-watch
+          key: ${{ steps.versions.outputs.key }}
+          lookup-only: true
+
+      - name: Decide
+        id: decide
+        run: echo "run=${{ steps.seen.outputs.cache-hit != 'true' }}" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: check
+    if: needs.check.outputs.run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        # Intel and Apple Silicon on macOS 26, and macOS 27, which GitHub
+        # only has for Apple Silicon and calls a preview.
+        runner: [macos-26-intel, macos-26, xcode-27]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Herdr
+        id: install
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.herdr }}
+        run: tools/ci/install-herdr.sh "$TAG"
+
+      - name: oh-my-zsh
+        id: omz
+        env:
+          OMZ: ${{ needs.check.outputs.omz }}
+        run: |
+          set -eu
+          [[ $OMZ =~ ^[0-9a-f]{40}$ ]] || { echo "no oh-my-zsh commit: $OMZ"; exit 1; }
+          git init -q "$RUNNER_TEMP/omz"
+          git -C "$RUNNER_TEMP/omz" fetch -q --depth 1 https://github.com/ohmyzsh/ohmyzsh "$OMZ"
+          git -C "$RUNNER_TEMP/omz" checkout -q FETCH_HEAD
+
+      - name: verify.py
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python3 tools/fixtures/verify.py
+
+      - name: Scratch check, plain zsh
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: python3 tools/scratch-check.py
+
+      - name: Scratch check, oh-my-zsh
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.omz.outcome == 'success' }}
+        run: python3 tools/scratch-check.py --omz "$RUNNER_TEMP/omz"
+
+  # Only after every Mac passed, so a failure, or a run that couldn't finish,
+  # is tried again the next day.
+  record:
+    needs: [check, test]
+    if: needs.check.outputs.run == 'true' && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Note
+        env:
+          KEY: ${{ needs.check.outputs.key }}
+        run: mkdir .herdr-watch && printf '%s\n' "$KEY" > .herdr-watch/key
+
+      - uses: actions/cache/save@v6
+        with:
+          path: .herdr-watch
+          key: ${{ needs.check.outputs.key }}

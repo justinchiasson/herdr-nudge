@@ -28,6 +28,7 @@ terminal was in the wrong place, which says nothing about the plugin.
 import glob
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -119,7 +120,14 @@ def wait(condition, timeout, step=0.5):
 def front_app():
     asn = subprocess.run(["lsappinfo", "front"], capture_output=True, text=True).stdout.strip()
     out = subprocess.run(["lsappinfo", "info", "-only", "bundleid", asn], capture_output=True, text=True).stdout
-    return out.strip().split("=")[-1].strip('"')
+    return bundle_id(out)
+
+
+def bundle_id(info):
+    # One line on macOS 26. On 27 it's a block whose last line is `Arch=…`,
+    # with the id on a bundleID= line (tests/fixtures/sys/lsappinfo-bundleid-*).
+    found = re.search(r'(?:"CFBundleIdentifier"|bundleID)="([^"]+)"', info)
+    return found.group(1) if found else "no app"
 
 
 def need_terminal_behind():

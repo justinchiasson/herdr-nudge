@@ -61,6 +61,25 @@ When a Herdr version stops being supported, delete the captures that only it
 has, and any test that replays them, in the same change. Otherwise
 nothing here ever shrinks.
 
+`verify.py` only sees Herdr's answers, not what its events do to the plugin.
+On Herdr 0.9.2 it passed while every shell banner went away as soon as it
+appeared. For that, run
+
+```sh
+python3 tools/scratch-check.py              # plain zsh
+python3 tools/scratch-check.py --omz DIR    # with the oh-my-zsh in DIR
+```
+
+It links this checkout as the plugin on a throwaway server and runs real
+commands in its panes. Then it checks that a banner posts, stays up, and goes
+away on the next command, on a click, when you move back to the pane, and when
+the pane, its tab or its workspace closes. A stand-in `claude` puts up a
+permission prompt for Herdr to read. Some banners really show on your Mac for
+a few seconds; leave them alone.
+
+CI runs both scripts on every new Herdr release (`.github/workflows/herdr-watch.yml`),
+and the scratch check against the oldest supported Herdr on every push to main.
+
 ## Redaction
 
 These files are published, so the capturing machine's identity is replaced
